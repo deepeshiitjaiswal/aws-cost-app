@@ -16,25 +16,31 @@ def load_aws_credentials():
 
 def get_daily_cost_data(client, start_date, end_date):
     """
-    Retrieve daily cost data from AWS Cost Explorer, grouped by service.
-    Returns a list of dictionaries with columns: Date, Service, and Cost.
+    Retrieve daily cost data from AWS Cost Explorer, grouped by both SERVICE and REGION.
+    Returns a list of dictionaries with columns: Date, Service, Region, and Cost.
     """
     response = client.get_cost_and_usage(
         TimePeriod={'Start': start_date, 'End': end_date},
         Granularity='DAILY',
         Metrics=['UnblendedCost'],
-        GroupBy=[{'Type': 'DIMENSION', 'Key': 'SERVICE'}]
+        GroupBy=[
+            {'Type': 'DIMENSION', 'Key': 'SERVICE'},
+            {'Type': 'DIMENSION', 'Key': 'REGION'}
+        ]
     )
     
     results = []
     for day_item in response['ResultsByTime']:
         date_str = day_item['TimePeriod']['Start']
         for group in day_item.get('Groups', []):
+            # group['Keys'] will contain [ServiceName, RegionName]
             service = group['Keys'][0]
+            region = group['Keys'][1]
             cost_amount = float(group['Metrics']['UnblendedCost']['Amount'])
             results.append({
                 'Date': date_str,
                 'Service': service,
+                'Region': region,
                 'Cost': cost_amount
             })
     return results
@@ -65,16 +71,31 @@ def create_dashboard():
     # Convert to pandas DataFrame
     df = pd.DataFrame(cost_data)
 
+    # --- Region Filter ---
+    # Let user pick a specific region or view all
+    all_regions = sorted(df['Region'].unique().tolist())
+    region_options = ['All'] + all_regions
+    selected_region = st.selectbox("Select AWS Region to Filter:", region_options, index=0)
+
+    # Filter the DataFrame if a specific region is chosen
+    if selected_region != 'All':
+        df = df[df['Region'] == selected_region]
+
     # 5. Summaries
-    #    a) Total cost by service (over the last 30 days)
+    #    a) Total cost by service (for the filtered region(s))
     service_cost = df.groupby('Service', as_index=False)['Cost'].sum().sort_values(by='Cost', ascending=False)
     #    b) Overall total cost
     total_cost = service_cost['Cost'].sum()
 
     # 6. Build Streamlit Dashboard
     st.title("AWS Cost Dashboard (Last 30 Days)")
-
     st.markdown(f"**Date Range:** {start_date} to {end_date}")
+
+    if selected_region == 'All':
+        st.markdown("**Regions:** All AWS Regions")
+    else:
+        st.markdown(f"**Region:** {selected_region}")
+
     # Show total cost in US dollars
     st.metric(label="Total AWS Spend (Last 30 Days)", value=f"${total_cost:,.2f}")
 
@@ -89,6 +110,7 @@ def create_dashboard():
     st.plotly_chart(fig_pie, use_container_width=True)
 
     # --- CHART 2: Bar/Column Chart of Daily Costs by Service ---
+    # We'll plot from the filtered df so it reflects the chosen region
     fig_bar = px.bar(
         df,
         x='Date',
